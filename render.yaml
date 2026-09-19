@@ -1,0 +1,14 @@
+# Revenue Leak Hunter — Render Blueprint
+# One-click deploy: Render → New → Blueprint → connect your GitHub repository.
+# (Same result as the manual steps in DEPLOYMENT.md, automated.)
+services:
+  - type: web
+    name: revenue-leak-hunter
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: node dist/server.cjs
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
