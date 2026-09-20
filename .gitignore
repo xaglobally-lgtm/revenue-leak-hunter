@@ -4,6 +4,7 @@ dist/
 coverage/
 data/
 .DS_Store
+desktop.ini
 *.log
 .env*
 !.env.example

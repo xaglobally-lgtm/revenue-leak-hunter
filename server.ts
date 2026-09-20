@@ -14,13 +14,19 @@ async function startServer() {
   await seedDatabase();
   console.log('[RLH] Database seeded with synthetic fixture revenue-leak-fixture-v1');
 
-  // Optional durable persistence: set RLH_STORE_FILE to a JSON file path and
-  // all in-memory data (recoveries, payments, settings, audit logs...) will
-  // survive server restarts instead of resetting to the fixture.
+  // Optional durable persistence: a local file (RLH_STORE_FILE) and/or Supabase
+  // (SUPABASE_URL + SUPABASE_ANON_KEY). With none set, the app runs the classic
+  // in-memory demo seeded fresh on each boot.
   const storeFile = process.env.RLH_STORE_FILE;
   if (storeFile) {
     const restored = db.initFilePersistence(storeFile);
     console.log(`[RLH] Persistence ${restored ? 'restored from' : 'initialized at'} ${storeFile}`);
+  }
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_ANON_KEY;
+  if (supabaseUrl && supabaseKey) {
+    await db.initSupabasePersistence(supabaseUrl, supabaseKey);
+    console.log(`[RLH] Supabase persistence bound to ${supabaseUrl}`);
   }
 
   app.use(express.json());

@@ -1071,7 +1071,7 @@ v1Router.post('/alerts/test', (req: Request, res: Response) => {
 v1Router.post('/system/reset-demo', async (req: Request, res: Response) => {
   await seedDatabase();
   activeOrgId = 'org_acme_corp';
-  db.persistNow();
+  db.replaceAllNow();
   res.json({
     data: {
       success: true,

@@ -45,8 +45,9 @@
 
 - [ ] Create your own **Stripe account** (or equivalent) to receive client fee payments.
 - [ ] Decide legal entity + bank account for ACH/wire deposits.
-- [ ] Draft/sign a **one-page contingency agreement**: 10%, 12-month attribution, collection-only basis.
-- [ ] Create GitHub, Render, Supabase accounts; deploy per `DEPLOYMENT.md`.
+- [ ] Draft/sign a **one-page contingency agreement**: 10%, 12-month attribution, collection-only basis. Draft template exists at `AGREEMENT_TEMPLATE.md` (owner must still fill in + get lawyer review).
+- [x] Create GitHub + Render accounts; app live at https://revenue-leak-hunter.onrender.com (owner must still do this alone — accounts need owner credentials).
+- [ ] Create **Supabase** project + keys; then I wire real persistence so data survives Render restarts.
 - [ ] Pick the pricing for the first prospect: **10% flat**.
 - [ ] Land first 5–10 clients; only then revisit rates.
 - [ ] Have a lawyer review the agreement and privacy/terms pages.
@@ -57,3 +58,4 @@
 2. Remind the owner of anything related to **collecting money** (accounts, agreement, invoices, Stripe Connect) every time it's relevant.
 3. Keep the fee **flat 10%**. Do not build tiered/variable fee code until a real signed deal needs it.
 4. Re-read this file at the start of any session about strategy, money, pricing, or the roadmap.
+5. **End every message with a reminder that this is Revenue Leak Hunter** (owner request).

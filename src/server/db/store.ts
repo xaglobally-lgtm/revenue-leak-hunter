@@ -52,8 +52,117 @@ export class DatabaseStore {
   private filePath: string | null = null;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Optional Supabase persistence (opt-in via SUPABASE_URL + SUPABASE_ANON_KEY).
+  // Supabase takes precedence over the local file when both are configured.
+  // All RLH data lives in one table `rlh_entities (entity, id, payload)` so it
+  // can safely share a database with other apps. Data is hydrated at boot and
+  // written through on every mutation (full snapshot replace per sync).
+  private remote: { url: string; key: string } | null = null;
+
   isPersistent(): boolean {
-    return this.filePath !== null;
+    return this.filePath !== null || this.remote !== null;
+  }
+
+  async initSupabasePersistence(url: string, key: string): Promise<boolean> {
+    this.filePath = null; // Supabase wins over the local file
+    this.remote = { url: url.replace(/\/+$/, ''), key };
+    this.cancelFlush();
+    const restored = await this.hydrateFromRemote();
+    if (!restored) {
+      await this.syncRemote('merge');
+      console.log('[RLH] Supabase persistence initialized (baseline uploaded)');
+    } else {
+      console.log('[RLH] Supabase persistence restored');
+    }
+    return restored;
+  }
+
+  private async hydrateFromRemote(): Promise<boolean> {
+    if (!this.remote) return false;
+    try {
+      const res = await fetch(`${this.remote.url}/rest/v1/rlh_entities?select=entity,payload&limit=10000`, {
+        headers: { apikey: this.remote.key, Authorization: `Bearer ${this.remote.key}`, Accept: 'application/json' },
+      });
+      if (!res.ok) {
+        console.warn('[RLH] Supabase read failed', res.status);
+        return false;
+      }
+      const rows = (await res.json()) as { entity: string; payload: Record<string, unknown> }[];
+      if (!rows.length) return false;
+
+      const data: Record<string, unknown> = {};
+      for (const r of rows) {
+        const id = r.payload?.id;
+        if (typeof id !== 'string' || !id) continue;
+        const list = (data[r.entity] ??= [] as [string, unknown][]) as [string, unknown][];
+        list.push([id, r.payload]);
+      }
+      this.restoreSnapshot(data);
+      console.log(`[RLH] Supabase: restored ${rows.length} rows across ${Object.keys(data).length} entity tables`);
+      return true;
+    } catch (err) {
+      console.warn('[RLH] Supabase read failed', err);
+      return false;
+    }
+  }
+
+  private syncQueue: Promise<void> = Promise.resolve();
+
+  // Fire-and-forget wrapper: serializes syncs so overlapping timers can never
+  // interleave a DELETE with another DELETE/INSERT. Normal writes UPSERT only
+  // (no DELETE), so readers never see an empty table; replace is reserved for
+  // reset-demo, which must drop rows that no longer exist locally.
+  private syncNow(mode: 'merge' | 'replace' = 'merge'): void {
+    this.syncQueue = this.syncQueue
+      .then(() => this.syncRemote(mode))
+      .catch(err => console.warn('[RLH] Supabase sync failed', err));
+  }
+
+  replaceAllNow(): void {
+    if (this.remote) {
+      this.syncNow('replace');
+      return;
+    }
+    this.persistNow();
+  }
+
+  private async syncRemote(mode: 'merge' | 'replace'): Promise<void> {
+    if (!this.remote) return;
+    const snap = this.snapshot();
+    const rows: { entity: string; id: string; payload: unknown }[] = [];
+    for (const [entity, entries] of Object.entries(snap)) {
+      for (const [id, value] of entries as [string, unknown][]) {
+        rows.push({ entity, id, payload: value });
+      }
+    }
+    try {
+      const base = `${this.remote.url}/rest/v1/rlh_entities`;
+      const headers = {
+        apikey: this.remote.key,
+        Authorization: `Bearer ${this.remote.key}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      };
+      if (mode === 'replace') {
+        const del = await fetch(`${base}?id=not.is.null`, { method: 'DELETE', headers });
+        if (!del.ok && del.status !== 404) {
+          throw new Error(`delete-all failed (${del.status})`);
+        }
+      }
+      if (rows.length) {
+        const ins = await fetch(`${base}?on_conflict=entity,id`, {
+          method: 'POST',
+          headers: { ...headers, Prefer: 'return=minimal,resolution=merge-duplicates' },
+          body: JSON.stringify(rows),
+        });
+        if (!ins.ok) {
+          throw new Error(`insert failed (${ins.status})`);
+        }
+      }
+      console.log(`[RLH] Supabase sync ${mode}: ${rows.length} rows`);
+    } catch (err) {
+      console.warn('[RLH] Supabase write failed', err);
+    }
   }
 
   snapshot(): Record<string, unknown> {
@@ -125,6 +234,10 @@ export class DatabaseStore {
   }
 
   persistNow(): void {
+    if (this.remote) {
+      void this.syncNow('merge');
+      return;
+    }
     if (!this.filePath) return;
     try {
       mkdirSync(dirname(this.filePath), { recursive: true });
@@ -137,7 +250,7 @@ export class DatabaseStore {
   }
 
   persistSoon(): void {
-    if (!this.filePath || this.flushTimer) return;
+    if ((!this.filePath && !this.remote) || this.flushTimer) return;
     this.flushTimer = setTimeout(() => {
       this.flushTimer = null;
       this.persistNow();
