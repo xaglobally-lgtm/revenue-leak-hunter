@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { db } from '../../db/store.ts';
 import { runDetectorsForOrg } from '../../detectors/index.ts';
 import { seedDatabase } from '../../fixtures/seed.ts';
@@ -8,17 +8,123 @@ import {
   DashboardOverview,
   LeakStatus,
   RecoveryStatus,
+  User,
   UserRole,
 } from '../../../types.ts';
 
 export const v1Router = Router();
 
 // Current active session state (default: Acme Corp, can be switched for tenant testing)
+// This remains the fallback identity for the PUBLIC_PATHS below (the
+// marketing free-scan flow, the public test-suite demo, contact form,
+// telemetry) — none of that carries real customer data, so it stays exactly
+// as it was. Everything else now requires a verified Supabase session; see
+// requireAuth below.
 let activeOrgId = 'org_acme_corp';
 let activeUserId = 'usr_jane_doe';
 
+// Routes reachable without signing in: the pre-signup marketing funnel
+// (free scan, public test-suite demo), the contact form, and lightweight
+// telemetry. Everything else handles real tenant data and is gated by
+// requireAuth. Paths are relative to this router's mount point (/api/v1).
+const PUBLIC_PATHS = new Set<string>([
+  '/scan',
+  '/scan/run',
+  '/test-suite/run',
+  '/contact',
+  '/analytics/event',
+  '/webhooks/stripe',
+]);
+
+// Verifies the caller's Supabase session (Authorization: Bearer <token>)
+// against Supabase's own /auth/v1/user endpoint, then maps that verified
+// identity to an RLH Organization + User — auto-provisioning a brand new
+// organization the very first time a given Supabase user is seen. This is
+// the actual tenant-isolation fix: previously `orgId` came straight from a
+// client-supplied header, so any visitor could read/write any tenant's data
+// just by sending a different x-organization-id. Now, for every route not
+// in PUBLIC_PATHS, orgId is derived only from a server-verified identity.
+async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
+  if (PUBLIC_PATHS.has(req.path)) return next();
+
+  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !supabaseAnonKey) {
+    // Real auth isn't configured on this deployment (SUPABASE_URL /
+    // SUPABASE_ANON_KEY unset) — fall back to the original shared demo
+    // session so existing deployments keep working unchanged.
+    return next();
+  }
+
+  const authHeader = req.headers['authorization'];
+  const token = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) {
+    res.status(401).json({ error: { code: 'UNAUTHENTICATED', message: 'Sign in required' } });
+    return;
+  }
+
+  try {
+    const verifyRes = await fetch(`${supabaseUrl.replace(/\/+$/, '')}/auth/v1/user`, {
+      headers: { apikey: supabaseAnonKey, Authorization: `Bearer ${token}` },
+    });
+    if (!verifyRes.ok) {
+      res.status(401).json({ error: { code: 'INVALID_SESSION', message: 'Your session has expired. Please sign in again.' } });
+      return;
+    }
+    const supabaseUser = (await verifyRes.json()) as { id: string; email?: string };
+    const rlhUserId = `sb_${supabaseUser.id}`;
+
+    let user = db.users.get(rlhUserId);
+    if (!user) {
+      // First time we've seen this Supabase user: give them their own,
+      // brand new organization (they are its OWNER) rather than dropping
+      // them into the shared demo tenant.
+      const orgId = `org_${supabaseUser.id.replace(/-/g, '').slice(0, 12)}`;
+      const emailLocalPart = supabaseUser.email?.split('@')[0] || 'My';
+      const now = new Date().toISOString();
+      db.organizations.set(orgId, {
+        id: orgId,
+        name: `${emailLocalPart}'s Organization`,
+        createdAt: now,
+        updatedAt: now,
+      });
+      user = {
+        id: rlhUserId,
+        organizationId: orgId,
+        email: supabaseUser.email || '',
+        name: emailLocalPart,
+        role: UserRole.OWNER,
+        createdAt: now,
+      };
+      db.users.set(rlhUserId, user);
+      db.persistSoon();
+    }
+
+    (req as Request & { authUser?: User }).authUser = user;
+    next();
+  } catch (err) {
+    console.error('[RLH] Auth verification failed', err);
+    res.status(401).json({ error: { code: 'AUTH_CHECK_FAILED', message: 'Could not verify your session' } });
+  }
+}
+
+v1Router.use(requireAuth);
+
 // Helper to get authenticated organization
 function getAuthContext(req: Request) {
+  const authUser = (req as Request & { authUser?: User }).authUser;
+  if (authUser) {
+    const org = db.organizations.get(authUser.organizationId) || {
+      id: authUser.organizationId,
+      name: 'My Organization',
+      createdAt: authUser.createdAt,
+      updatedAt: authUser.createdAt,
+    };
+    return { orgId: authUser.organizationId, user: authUser, org };
+  }
+
+  // Unauthenticated fallback — only reached for routes in PUBLIC_PATHS, or
+  // when this deployment has no Supabase Auth configured at all (demo mode).
   // Allow header override for testing tenant isolation e.g. x-organization-id
   const orgHeader = req.headers['x-organization-id'] as string;
   const orgId = orgHeader || activeOrgId;
@@ -55,7 +161,11 @@ v1Router.get('/me', (req: Request, res: Response) => {
         name: org.name,
         settings: org.settings,
       },
-      availableTenants: Array.from(db.organizations.values()).map(o => ({ id: o.id, name: o.name })),
+      // Only ever the caller's own organization — this used to list every
+      // organization in the database, which would leak every other
+      // customer's company name once real signups started auto-creating
+      // real orgs. Each authenticated user has exactly one org in this model.
+      availableTenants: [{ id: org.id, name: org.name }],
     },
   });
 });

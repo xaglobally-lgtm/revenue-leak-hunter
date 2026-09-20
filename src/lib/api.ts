@@ -1,5 +1,16 @@
+// Current Supabase access token, if the visitor is signed in. Set by
+// AuthContext whenever the session changes; read here so this plain
+// function (not a React hook) can attach it to every request.
+let currentAccessToken: string | null = null;
+
+export function setAccessToken(token: string | null): void {
+  currentAccessToken = token;
+}
+
 // Shared API helper. Every request carries the active organization id in the
-// x-organization-id header so the server enforces strict tenant isolation.
+// x-organization-id header (legacy demo-mode tenant switching) and, once
+// signed in, a real `Authorization: Bearer <token>` header — the server
+// trusts the token over the header for any authenticated user.
 export async function rlhFetch<T = unknown>(
   path: string,
   options?: RequestInit,
@@ -13,6 +24,9 @@ export async function rlhFetch<T = unknown>(
   } else {
     const stored = localStorage.getItem('rlh_org');
     if (stored) headers['x-organization-id'] = stored;
+  }
+  if (currentAccessToken) {
+    headers['Authorization'] = `Bearer ${currentAccessToken}`;
   }
   if (options?.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json';

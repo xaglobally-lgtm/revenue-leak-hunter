@@ -20,7 +20,9 @@ import { TestSuiteView } from './components/TestSuiteView.tsx';
 import { DocumentationView } from './components/DocumentationView.tsx';
 import { PublicLanding } from './components/PublicLanding.tsx';
 import { FreeScanFlow } from './components/FreeScanFlow.tsx';
+import { LoginView } from './components/LoginView.tsx';
 import { AppProvider, useApp } from './context/AppContext.tsx';
+import { AuthProvider, useAuth } from './context/AuthContext.tsx';
 import { DashboardOverview, Leak, Recovery, User } from './types.ts';
 import { rlhFetch } from './lib/api.ts';
 import { trackEvent, initErrorTracking } from './lib/telemetry.ts';
@@ -28,10 +30,29 @@ import { LegalModal } from './components/LegalModal.tsx';
 
 function AppContent() {
   const { theme, workflowStep, setWorkflowStep, activeOrgId, setActiveOrgId } = useApp();
+  const { authEnabled, loading: authLoading, session, signOut } = useAuth();
   const isDark = theme === 'dark';
 
   const [viewMode, setViewMode] = useState<'app' | 'public' | 'scan'>('app');
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
+
+  // Real signed-in identity (populated from /api/v1/me once authenticated).
+  // Unused in demo mode (authEnabled === false), where the app keeps its
+  // original hardcoded demo user/tenants below.
+  const [meData, setMeData] = useState<{ user: User; organization: { id: string; name: string } } | null>(null);
+
+  useEffect(() => {
+    if (!authEnabled || !session) return;
+    let cancelled = false;
+    rlhFetch<{ data: { user: User; organization: { id: string; name: string } } }>('/api/v1/me').then(res => {
+      if (cancelled || !res.ok || !res.data?.data) return;
+      setMeData(res.data.data);
+      setActiveOrgId(res.data.data.organization.id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authEnabled, session, setActiveOrgId]);
 
   // Switch tenant (kept in sync with server via x-organization-id header)
   const handleSwitchTenant = (orgId: string) => {
@@ -39,10 +60,17 @@ function AppContent() {
     localStorage.setItem('rlh_org', orgId);
   };
 
-  const availableTenants = [
-    { id: 'org_acme_corp', name: 'Acme Revenue Operations' },
-    { id: 'org_vortex_global', name: 'Vortex Global (Isolated Tenant)' },
-  ];
+  // In real-auth mode each signed-in user has exactly one organization
+  // (auto-created on first login) — no demo tenant switcher. In demo mode
+  // (authEnabled === false) this keeps the original two synthetic tenants.
+  const availableTenants = authEnabled
+    ? meData
+      ? [{ id: meData.organization.id, name: meData.organization.name }]
+      : []
+    : [
+        { id: 'org_acme_corp', name: 'Acme Revenue Operations' },
+        { id: 'org_vortex_global', name: 'Vortex Global (Isolated Tenant)' },
+      ];
 
   // Data states
   const [dashboardData, setDashboardData] = useState<DashboardOverview | null>(null);
@@ -55,7 +83,8 @@ function AppContent() {
     netBenefit: string;
   } | null>(null);
   const [customers, setCustomers] = useState<CustomerWithMetrics[]>([]);
-  const [currentUser] = useState<User | null>({
+  // Demo-mode fallback identity, used only when authEnabled === false.
+  const [demoUser] = useState<User>({
     id: 'user-1',
     organizationId: 'org-acme-prod',
     name: 'Jane Doe',
@@ -64,6 +93,7 @@ function AppContent() {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
+  const currentUser: User | null = authEnabled ? meData?.user ?? null : demoUser;
 
   const [isSyncing, setIsSyncing] = useState(false);
 
@@ -77,8 +107,11 @@ function AppContent() {
 
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithMetrics | null>(null);
 
-  // Fetch all tenant data
+  // Fetch all tenant data. Skipped while a real-auth deployment hasn't
+  // finished signing the visitor in yet (avoids a burst of 401s against the
+  // protected endpoints right before the login screen renders).
   const fetchData = useCallback(async () => {
+    if (authEnabled && !session) return;
     try {
       const [dashRes, oppsRes, recsRes, custRes] = await Promise.all([
         rlhFetch<{ data: DashboardOverview }>(`/api/v1/dashboard`, undefined, activeOrgId),
@@ -111,7 +144,7 @@ function AppContent() {
     } catch (err) {
       console.error('Failed to fetch application state:', err);
     }
-  }, [activeOrgId, setWorkflowStep]);
+  }, [activeOrgId, setWorkflowStep, authEnabled, session]);
 
   useEffect(() => {
     fetchData();
@@ -277,6 +310,33 @@ function AppContent() {
     );
   }
 
+  // Real-auth login wall: only applies when this deployment has
+  // VITE_SUPABASE_URL/VITE_SUPABASE_ANON_KEY configured. Demo deployments
+  // (authEnabled === false) are completely unaffected by any of this.
+  if (authEnabled && authLoading) {
+    return (
+      <div
+        className={`h-screen w-screen flex items-center justify-center ${
+          isDark ? 'bg-slate-950' : 'bg-slate-100'
+        }`}
+      />
+    );
+  }
+  if (authEnabled && !session) {
+    return <LoginView onBackToHome={() => setViewMode('public')} />;
+  }
+  if (authEnabled && session && !meData) {
+    // Signed in, waiting on the one /me round-trip that resolves this
+    // user's organization before rendering data that depends on it.
+    return (
+      <div
+        className={`h-screen w-screen flex items-center justify-center ${
+          isDark ? 'bg-slate-950' : 'bg-slate-100'
+        }`}
+      />
+    );
+  }
+
   const currentTenant = availableTenants.find(t => t.id === activeOrgId);
 
   const recoverySummary = recoverySummaryData || {
@@ -313,6 +373,7 @@ function AppContent() {
           onViewRecoveries={() => setCurrentTab('recoveries')}
           onTriggerSync={handleTriggerSync}
           isSyncing={isSyncing}
+          onSignOut={authEnabled ? signOut : undefined}
         />
 
         {/* Next-Touch Guided Workflow Bar */}
@@ -467,7 +528,9 @@ function AppContent() {
 export default function App() {
   return (
     <AppProvider>
-      <AppContent />
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
     </AppProvider>
   );
 }

@@ -10,6 +10,7 @@ import {
   WifiOff,
   HelpCircle,
   ShieldCheck,
+  LogOut,
 } from 'lucide-react';
 import { useApp } from '../context/AppContext.tsx';
 import { Locale } from '../lib/i18n.ts';
@@ -26,6 +27,7 @@ interface NavbarProps {
   onViewRecoveries: () => void;
   onTriggerSync: () => void;
   isSyncing: boolean;
+  onSignOut?: () => void;
 }
 
 const languages: { code: Locale; label: string; flag: string }[] = [
@@ -50,6 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onViewRecoveries,
   onTriggerSync,
   isSyncing,
+  onSignOut,
 }) => {
   const {
     theme,
@@ -193,6 +196,21 @@ export const Navbar: React.FC<NavbarProps> = ({
         >
           <HelpCircle className="w-3.5 h-3.5 text-emerald-500" />
         </button>
+
+        {/* Sign Out (only rendered when real auth is active) */}
+        {onSignOut && (
+          <button
+            onClick={onSignOut}
+            title="Sign out"
+            className={`p-1.5 rounded-lg border transition-colors cursor-pointer ${
+              isDark
+                ? 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+                : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-slate-900'
+            }`}
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </header>
   );
