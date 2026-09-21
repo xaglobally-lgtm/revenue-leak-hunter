@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import { Resend } from 'resend';
 import { db } from '../../db/store.ts';
 import { runDetectorsForOrg } from '../../detectors/index.ts';
 import { seedDatabase } from '../../fixtures/seed.ts';
@@ -180,8 +181,43 @@ v1Router.post('/switch-tenant', (req: Request, res: Response) => {
   res.json({ data: { activeOrgId } });
 });
 
-// Contact form reception (feedback mechanism - stores message in audit log)
-v1Router.post('/contact', (req: Request, res: Response) => {
+// Sends a Contact-form submission to a real inbox via Resend
+// (https://resend.com). Optional and backward-compatible: when
+// RESEND_API_KEY is unset (the default), this is a no-op and the contact
+// form behaves exactly as before — received + logged to the audit log,
+// just not emailed anywhere. A failure to send never fails the request:
+// the visitor's message is already safely recorded in the audit log either
+// way, so a flaky email provider should never turn into a broken contact form.
+const resendClient = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+async function sendContactNotification(
+  ticketId: string,
+  name: string,
+  email: string,
+  message: string,
+): Promise<void> {
+  if (!resendClient) return;
+  const to = process.env.CONTACT_NOTIFICATION_EMAIL || process.env.RESEND_NOTIFICATION_EMAIL;
+  if (!to) {
+    console.warn('[RLH] RESEND_API_KEY is set but CONTACT_NOTIFICATION_EMAIL is not — skipping contact email.');
+    return;
+  }
+  try {
+    await resendClient.emails.send({
+      from: 'Revenue Leak Hunter <onboarding@resend.dev>',
+      to,
+      replyTo: email,
+      subject: `New contact form message (${ticketId})`,
+      text: `From: ${name || '(no name given)'} <${email}>\nTicket: ${ticketId}\n\n${message}`,
+    });
+  } catch (err) {
+    console.error('[RLH] Failed to send contact notification email', err);
+  }
+}
+
+// Contact form reception (feedback mechanism - stores message in audit log,
+// and emails it to CONTACT_NOTIFICATION_EMAIL when Resend is configured)
+v1Router.post('/contact', async (req: Request, res: Response) => {
   const { orgId, user } = getAuthContext(req);
   const { name, email, message } = req.body || {};
   if (!email || !message) {
@@ -191,6 +227,7 @@ v1Router.post('/contact', (req: Request, res: Response) => {
   }
   const ticketId = `cnt_${Date.now()}`;
   db.logAudit(orgId, 'CONTACT_MESSAGE', 'ContactForm', ticketId, null, { name: name || '', email, message }, null, user?.id);
+  await sendContactNotification(ticketId, name || '', email, message);
   res.json({
     data: {
       ticketId,
