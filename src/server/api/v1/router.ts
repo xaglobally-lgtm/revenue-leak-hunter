@@ -203,13 +203,22 @@ async function sendContactNotification(
     return;
   }
   try {
-    await resendClient.emails.send({
+    // The Resend SDK does NOT throw on an API-level failure (bad recipient,
+    // unverified domain, etc.) — it resolves successfully with an `error`
+    // field instead, so that has to be checked explicitly or a real failure
+    // here would look identical to a success.
+    const result = await resendClient.emails.send({
       from: 'Revenue Leak Hunter <onboarding@resend.dev>',
       to,
       replyTo: email,
       subject: `New contact form message (${ticketId})`,
       text: `From: ${name || '(no name given)'} <${email}>\nTicket: ${ticketId}\n\n${message}`,
     });
+    if (result.error) {
+      console.error('[RLH] Resend rejected the contact notification email', result.error);
+    } else {
+      console.log(`[RLH] Contact notification email sent (Resend id: ${result.data?.id})`);
+    }
   } catch (err) {
     console.error('[RLH] Failed to send contact notification email', err);
   }
