@@ -196,9 +196,6 @@ async function sendContactNotification(
   email: string,
   message: string,
 ): Promise<void> {
-  // TEMPORARY diagnostic — unconditional so we can see exactly how far this
-  // function gets on every call, regardless of which branch it takes.
-  console.log(`[RLH] DIAG: sendContactNotification called for ${ticketId}, resendClient=${!!resendClient}`);
   if (!resendClient) return;
   const to = process.env.CONTACT_NOTIFICATION_EMAIL || process.env.RESEND_NOTIFICATION_EMAIL;
   if (!to) {
@@ -217,7 +214,6 @@ async function sendContactNotification(
       subject: `New contact form message (${ticketId})`,
       text: `From: ${name || '(no name given)'} <${email}>\nTicket: ${ticketId}\n\n${message}`,
     });
-    console.log('[RLH] DIAG: raw Resend result', JSON.stringify(result));
     if (result.error) {
       console.error('[RLH] Resend rejected the contact notification email', result.error);
     } else {

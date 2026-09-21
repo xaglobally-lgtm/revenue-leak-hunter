@@ -29,14 +29,6 @@ async function startServer() {
     console.log(`[RLH] Supabase persistence bound to ${supabaseUrl}`);
   }
 
-  // TEMPORARY diagnostic — confirms at boot whether the Resend env vars are
-  // actually visible to this process (never logs the key itself). Remove
-  // once the contact-form email issue is confirmed fixed.
-  console.log(
-    `[RLH] DIAG: RESEND_API_KEY present=${Boolean(process.env.RESEND_API_KEY)} ` +
-    `CONTACT_NOTIFICATION_EMAIL present=${Boolean(process.env.CONTACT_NOTIFICATION_EMAIL)}`
-  );
-
   app.use(express.json());
 
   // Health check endpoint
